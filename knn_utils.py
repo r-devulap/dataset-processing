@@ -19,6 +19,44 @@ def read_fvecs(fname):
         num_vectors = len(data) // (dim + 1)
         return data.reshape(num_vectors, dim + 1)[:, 1:]  # Remove first column (dimension)
 
+def read_bvecs(fname):
+    """
+    Reads a bvecs file containing signed int8 vectors and returns a numpy array of shape (n, d)
+    converted to float32 for metric computation.
+    Format on disk per vector: [d (int32 little-endian), int8_1, int8_2, ..., int8_d]
+    """
+    with open(fname, "rb") as f:
+        header = f.read(4)
+        if len(header) < 4:
+            return np.empty((0, 0), dtype=np.float32)
+        dim = struct.unpack("<i", header)[0]
+        if dim <= 0:
+            raise ValueError(f"Invalid dimension {dim} in {fname}")
+
+        f.seek(0, os.SEEK_END)
+        file_size = f.tell()
+        record_size = 4 + dim
+
+        if file_size % record_size != 0:
+            raise ValueError(f"File size {file_size} not divisible by record size {record_size}")
+
+        n = file_size // record_size
+        f.seek(0)
+
+        # Read as structured bytes
+        raw = np.fromfile(f, dtype=np.uint8, count=file_size)
+        raw_matrix = raw.reshape(n, record_size)
+
+        # First 4 bytes are int32 dimension
+        dims = raw_matrix[:, :4].view(np.int32).reshape(n)
+        if not np.all(dims == dim):
+            raise ValueError(f"Inconsistent dimension header in {fname}")
+
+        # Remaining bytes are signed int8
+        int8_data = raw_matrix[:, 4:].view(np.int8)
+        return int8_data.astype(np.float32)
+
+
 def read_hdf5(fname, key="data"):
     """
     Reads an HDF5 file and returns a numpy array from the dataset with the given key.
@@ -43,19 +81,22 @@ def read_hdf5_tensor(fname, key="data"):
 
 def read_vectors(fname):
     """
-    Determines whether the file is HDF5 or fvec format.
+    Determines whether the file is HDF5, bvecs, or fvec format.
     For HDF5 files (extension .h5 or .hdf5), it checks for a colon.
     If a colon is found, splits the string into filename and key.
     Otherwise, uses the default key "data".
     """
     fname = os.path.expanduser(fname)
-    # If a colon is present, split into file_path and key.
     if ':' in fname:
         file_path, key = fname.split(':', 1)
         if file_path.endswith('.h5') or file_path.endswith('.hdf5'):
             return read_hdf5(file_path, key)
         else:
             raise ValueError("For HDF5, use the format 'file.h5:key'")
+    elif fname.endswith('.bvecs'):
+        return read_bvecs(fname)
+    elif fname.endswith('.h5') or fname.endswith('.hdf5'):
+        return read_hdf5(fname, "data")
     else:
         return read_fvecs(fname)
 

@@ -17,22 +17,23 @@ import shutil
 MIN_PARTITION_SIZE     = 1_000_000     # minimum vectors per partition
 IO_BUFFER_SIZE_BYTES   = 16 * 1024**2  # 16 MB per read/write block
 
-def read_dim_and_count(path):
+def read_dim_and_count(path, is_bvecs=False):
     """
-    Reads the vector dimension from the first 4 bytes of a .fvecs file
+    Reads the vector dimension from the first 4 bytes of a .fvecs or .bvecs file
     and computes the total number of records based on file size.
 
-    @param path: filesystem path to the input .fvecs file
+    @param path: filesystem path to the input file
+    @param is_bvecs: True if the file is in .bvecs (int8) format
     @return: tuple (dim, total_records)
     @raises ValueError: if file is too short or its size is not a multiple of record size
     """
     with open(path, "rb") as f:
         hdr = f.read(4)
         if len(hdr) < 4:
-            raise ValueError("Empty or corrupt .fvecs file")
+            raise ValueError("Empty or corrupt file")
         dim = int.from_bytes(hdr, byteorder="little", signed=True)
 
-    record_size = 4 + 4 * dim
+    record_size = 4 + dim if is_bvecs else 4 + 4 * dim
     total_bytes = os.path.getsize(path)
     if total_bytes % record_size != 0:
         raise ValueError("File size not a multiple of record size")
@@ -128,7 +129,7 @@ def concat_parts(parts, out_path, label):
 
 def main():
     """
-    Orchestrates the parallel split of a single .fvecs file into
+    Orchestrates the parallel split of a single .fvecs or .bvecs file into
     query and base outputs:
 
       1. Parses command-line arguments.
@@ -141,15 +142,15 @@ def main():
       6. Concatenates the per-worker query and base parts.
       7. Optionally truncates the base output if --num_base was set.
 
-    Usage: splitter.py <input.fvecs> [--num_query N] [--num_base M]
+    Usage: splitter.py <input.fvecs|input.bvecs> [--num_query N] [--num_base M]
     """
     p = argparse.ArgumentParser(
         description=(
-            "Parallel, block-buffered raw-byte split of an .fvecs file\n"
+            "Parallel, block-buffered raw-byte split of an .fvecs or .bvecs file\n"
             f"(min partition size={MIN_PARTITION_SIZE}, I/O buffer={IO_BUFFER_SIZE_BYTES//(1024**2)} MB)"
         )
     )
-    p.add_argument("input", help="Input .fvecs file")
+    p.add_argument("input", help="Input .fvecs or .bvecs file")
     p.add_argument("--num_query", type=int, default=10_000,
                    help="How many query vectors to sample")
     p.add_argument("--num_base", type=int, default=None,
@@ -159,8 +160,9 @@ def main():
     args = p.parse_args()
 
     # Phase 1: header + count
-    dim, total_records = read_dim_and_count(args.input)
-    record_size = 4 + 4 * dim
+    is_bvecs = args.input.lower().endswith(".bvecs")
+    dim, total_records = read_dim_and_count(args.input, is_bvecs)
+    record_size = 4 + dim if is_bvecs else 4 + 4 * dim
 
     if args.num_query > total_records:
         raise ValueError(f"num_query={args.num_query} > {total_records} available")
@@ -220,6 +222,7 @@ def main():
     # Phase 7: optional truncation of base
     if args.num_base is not None:
         keep = min(remaining, args.num_base)
+        record_size = 4 + dim if is_bvecs else 4 + 4 * dim
         with open(b_final, "r+b") as fb:
             fb.truncate(keep * record_size)
         print(f"✔ Truncated base to {keep}/{remaining} vectors\n")

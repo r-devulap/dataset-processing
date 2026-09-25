@@ -6,6 +6,10 @@ import struct
 import numpy as np
 
 
+# ---------------------------------------------------------------------------
+# fvecs helpers
+# ---------------------------------------------------------------------------
+
 def read_fvecs(fname):
     fname = os.path.expanduser(fname)
     data = np.fromfile(fname, dtype=np.float32)
@@ -54,23 +58,73 @@ def write_fvecs(fname, arr):
         formatted.tofile(f)
 
 
+# ---------------------------------------------------------------------------
+# bvecs helpers
+# ---------------------------------------------------------------------------
+
+def read_bvecs(fname):
+    """Read a .bvecs file and return an int8 ndarray of shape (n, dim)."""
+    fname = os.path.expanduser(fname)
+    with open(fname, "rb") as f:
+        raw = f.read()
+
+    if not raw:
+        return np.empty((0, 0), dtype=np.int8)
+
+    dim = struct.unpack("<i", raw[:4])[0]
+    if dim <= 0:
+        raise ValueError(f"Invalid dimension {dim} in {fname}")
+
+    record_size = 4 + dim
+    if len(raw) % record_size != 0:
+        raise ValueError(
+            f"File size is not consistent with bvecs format: "
+            f"{fname}, dim={dim}, total_bytes={len(raw)}"
+        )
+
+    n = len(raw) // record_size
+    # Parse using numpy: view as uint8, reshape, skip the 4-byte header per row.
+    buf = np.frombuffer(raw, dtype=np.uint8).reshape(n, record_size)
+    return np.ascontiguousarray(buf[:, 4:].view(np.int8))
+
+
+def write_bvecs(fname, arr):
+    """Write an int8 ndarray (n, dim) to a .bvecs file."""
+    arr = np.asarray(arr, dtype=np.int8)
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D array, got shape {arr.shape}")
+
+    n, d = arr.shape
+    fname = os.path.expanduser(fname)
+    header = np.array([d], dtype=np.int32).tobytes()
+
+    with open(fname, "wb") as f:
+        for i in range(n):
+            f.write(header)
+            f.write(arr[i].tobytes())
+
+
+# ---------------------------------------------------------------------------
+# Shared logic
+# ---------------------------------------------------------------------------
+
 def count_zero_vectors(arr, tol=0.0):
-    norms = np.linalg.norm(arr, axis=1)
+    norms = np.linalg.norm(arr.astype(np.float32), axis=1)
     return int(np.sum(norms <= tol))
 
 
 def remove_zero_vectors(arr, tol=0.0):
-    norms = np.linalg.norm(arr, axis=1)
+    norms = np.linalg.norm(arr.astype(np.float32), axis=1)
     keep_mask = norms > tol
-    return np.ascontiguousarray(arr[keep_mask], dtype=np.float32)
+    return np.ascontiguousarray(arr[keep_mask])
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Remove vectors whose L2 norm is at or below a tolerance from an fvecs file."
+        description="Remove vectors whose L2 norm is at or below a tolerance from an fvecs or bvecs file."
     )
-    parser.add_argument("--input", required=True, help="Input fvecs file")
-    parser.add_argument("--output", required=True, help="Output fvecs file with near-zero vectors removed")
+    parser.add_argument("--input", required=True, help="Input fvecs or bvecs file")
+    parser.add_argument("--output", required=True, help="Output file with near-zero vectors removed")
     parser.add_argument(
         "--tolerance",
         type=float,
@@ -82,7 +136,8 @@ def main():
     if args.tolerance < 0:
         raise ValueError("--tolerance must be non-negative")
 
-    vectors = read_fvecs(args.input)
+    is_bvecs = args.input.lower().endswith(".bvecs")
+    vectors = read_bvecs(args.input) if is_bvecs else read_fvecs(args.input)
 
     zero_count = count_zero_vectors(vectors, tol=args.tolerance)
     print(f"Zero tolerance: {args.tolerance}")
@@ -98,7 +153,10 @@ def main():
     print(f"Remaining vectors: {cleaned.shape[0]}")
     print(f"Dimension: {cleaned.shape[1]}")
 
-    write_fvecs(args.output, cleaned)
+    if is_bvecs:
+        write_bvecs(args.output, cleaned)
+    else:
+        write_fvecs(args.output, cleaned.astype(np.float32))
     print(f"Wrote cleaned file to: {args.output}")
 
 

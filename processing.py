@@ -23,7 +23,9 @@ from config import (
     GT_PROCESSED_QUERY_FVECS,
     GT_SHUFFLE,
     GT_GPUS,
+    HDF5_DATASET_NAME,
     INPUT_FILES,
+    INT8_QUANTIZATION_MODE,
     LOG_FILE,
     NORMALIZATION_TOLERANCE,
     NORMALIZE_CMD,
@@ -32,7 +34,13 @@ from config import (
     NUM_QUERY,
     OVERWRITE,
     PARQUET_EMBEDDING_COLUMN,
+    QUANTIZE_CMD,
+    QUANTIZE_TO_INT8,
+    QUANTIZED_BASE_BVECS,
+    QUANTIZED_QUERY_BVECS,
+    QUANTIZATION_META_FILE,
     RAW_BASE_FVECS,
+    RAW_QUANTIZED_BVECS,
     REMOVE_ZEROS_CMD,
     RUN_DIR,
     SOURCE_TYPE,
@@ -45,6 +53,7 @@ from config import (
     ZERO_TOLERANCE,
     NORMALIZED_BASE_FVECS,
 )
+from bvecs_writer import count_bvecs
 from fvecs_writer import append_fvecs, count_fvecs
 from ivecs_check import read_ivecs_info
 from config import READER_BATCH_SIZE
@@ -113,7 +122,13 @@ def extract_base_vectors(logger: logging.Logger) -> dict:
 
     validate_input_files()
 
-    reader = build_reader(SOURCE_TYPE, INPUT_FILES, PARQUET_EMBEDDING_COLUMN, READER_BATCH_SIZE)
+    reader = build_reader(
+        SOURCE_TYPE,
+        INPUT_FILES,
+        parquet_embedding_column=PARQUET_EMBEDDING_COLUMN,
+        hdf5_dataset_name=HDF5_DATASET_NAME,
+        batch_size=READER_BATCH_SIZE,
+    )
     logger.info("Reader description: %s", reader.describe())
 
     requested_initial_vectors = None if NUM_BASE is None else (NUM_BASE + NUM_QUERY)
@@ -315,6 +330,9 @@ def count_output_file(path: Path) -> tuple[int, int]:
     if suffix == ".fvecs":
         return count_fvecs(path)
 
+    if suffix == ".bvecs":
+        return count_bvecs(path)
+
     if suffix == ".ivecs":
         _, num_rows, row_length = read_ivecs_info(str(path))
         if row_length is None:
@@ -356,6 +374,7 @@ def main() -> None:
     logger.info("Parquet embedding column: %s", PARQUET_EMBEDDING_COLUMN)
     logger.info("Remove zeros tolerance: %s", ZERO_TOLERANCE)
     logger.info("Normalization tolerance: %s", NORMALIZATION_TOLERANCE)
+    logger.info("Quantize to INT8: %s", QUANTIZE_TO_INT8)
 
     start = time.time()
     success = True
@@ -376,6 +395,20 @@ def main() -> None:
     try:
         summary["stages"]["extract_base"] = extract_base_vectors(logger)
 
+        if QUANTIZE_TO_INT8:
+            # --- Quantize first, before any cleaning ---
+            summary["stages"]["quantize_int8"] = run_external_stage(
+                logger,
+                "quantize_int8",
+                QUANTIZE_CMD,
+                expected_outputs=RAW_QUANTIZED_BVECS,
+            )
+            if QUANTIZATION_META_FILE.exists():
+                with open(QUANTIZATION_META_FILE, "r") as f:
+                    summary["stages"]["quantize_int8"]["meta"] = json.load(f)
+            if CLEANUP_INTERMEDIATE_FVECS:
+                safe_delete(RAW_BASE_FVECS, logger)
+
         summary["stages"]["remove_zeros"] = run_external_stage(
             logger,
             "remove_zeros",
@@ -383,7 +416,10 @@ def main() -> None:
             expected_outputs=NONZERO_BASE_FVECS,
         )
         if CLEANUP_INTERMEDIATE_FVECS:
-            safe_delete(RAW_BASE_FVECS, logger)
+            if QUANTIZE_TO_INT8:
+                safe_delete(RAW_QUANTIZED_BVECS, logger)
+            else:
+                safe_delete(RAW_BASE_FVECS, logger)
 
         summary["stages"]["normalize"] = run_external_stage(
             logger,
@@ -446,24 +482,30 @@ def main() -> None:
         summary["stages"]["ground_truth"]["shuffle"] = GT_SHUFFLE
         summary["stages"]["ground_truth"]["gpus"] = GT_GPUS
 
-        if GT_PROCESSED_BASE_FVECS.exists() and GT_PROCESSED_QUERY_FVECS.exists():
-            base_source = GT_PROCESSED_BASE_FVECS
-            query_source = GT_PROCESSED_QUERY_FVECS
+        if QUANTIZE_TO_INT8:
+            base_source = QUANTIZED_BASE_BVECS
+            query_source = QUANTIZED_QUERY_BVECS
+            ext = ".bvecs"
         else:
-            base_source = SPLIT_BASE_FVECS
-            query_source = SPLIT_QUERY_FVECS
+            if GT_PROCESSED_BASE_FVECS.exists() and GT_PROCESSED_QUERY_FVECS.exists():
+                base_source = GT_PROCESSED_BASE_FVECS
+                query_source = GT_PROCESSED_QUERY_FVECS
+            else:
+                base_source = SPLIT_BASE_FVECS
+                query_source = SPLIT_QUERY_FVECS
+            ext = ".fvecs"
 
         actual_query_count, _ = count_output_file(query_source)
         actual_base_count, _ = count_output_file(base_source)
 
-        final_base_fvecs = RUN_DIR / f"{FILE_PREFIX}_base_{actual_base_count}.fvecs"
-        final_query_fvecs = RUN_DIR / f"{FILE_PREFIX}_query_{actual_query_count}.fvecs"
+        final_base_file = RUN_DIR / f"{FILE_PREFIX}_base_{actual_base_count}{ext}"
+        final_query_file = RUN_DIR / f"{FILE_PREFIX}_query_{actual_query_count}{ext}"
 
-        safe_rename(base_source, final_base_fvecs, logger)
-        safe_rename(query_source, final_query_fvecs, logger)
+        safe_rename(base_source, final_base_file, logger)
+        safe_rename(query_source, final_query_file, logger)
         safe_rename(GROUND_TRUTH_FILE, FINAL_GROUND_TRUTH, logger)
 
-        if CLEANUP_INTERMEDIATE_FVECS:
+        if CLEANUP_INTERMEDIATE_FVECS and not QUANTIZE_TO_INT8:
             if base_source != SPLIT_BASE_FVECS:
                 safe_delete(SPLIT_BASE_FVECS, logger)
             if query_source != SPLIT_QUERY_FVECS:
@@ -480,8 +522,8 @@ def main() -> None:
         }
 
         summary["final_artifacts"] = {
-            "base": str(final_base_fvecs),
-            "query": str(final_query_fvecs),
+            "base": str(final_base_file),
+            "query": str(final_query_file),
             "ground_truth": str(FINAL_GROUND_TRUTH),
         }
 

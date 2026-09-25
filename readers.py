@@ -162,12 +162,63 @@ class ParquetEmbeddingReader(EmbeddingReader):
             "files": [str(p) for p in self.input_files],
         }
 
+class Hdf5EmbeddingReader(EmbeddingReader):
+
+    def __init__(
+        self,
+        input_files: List[Path],
+        dataset_name: str = "train",
+        batch_size: int = 32768,
+    ) -> None:
+        if not dataset_name:
+            raise ValueError("Hdf5EmbeddingReader requires a non-empty dataset_name")
+        _validate_file_suffixes(input_files, "Hdf5EmbeddingReader", (".h5", ".hdf5"))
+        self.input_files = input_files
+        self.dataset_name = dataset_name
+        self.batch_size = batch_size
+
+    def iter_batches(self) -> Iterable[np.ndarray]:
+        import h5py
+
+        for path in self.input_files:
+            with h5py.File(path, "r") as f:
+                if self.dataset_name not in f:
+                    raise KeyError(
+                        f"{path} does not contain HDF5 dataset '{self.dataset_name}'. "
+                        f"Available keys: {list(f.keys())}"
+                    )
+
+                ds = f[self.dataset_name]
+                if ds.ndim != 2:
+                    raise ValueError(
+                        f"{path}['{self.dataset_name}'] must be 2D, got shape {ds.shape}"
+                    )
+
+                num_vectors = ds.shape[0]
+                self.current_file = str(path)
+
+                for start in range(0, num_vectors, self.batch_size):
+                    end = min(start + self.batch_size, num_vectors)
+                    batch = ds[start:end]
+                    yield np.asarray(batch, dtype=np.float32)
+
+    def describe(self) -> dict:
+        return {
+            "reader": "hdf5",
+            "dataset_name": self.dataset_name,
+            "batch_size": self.batch_size,
+            "num_files": len(self.input_files),
+            "files": [str(p) for p in self.input_files],
+        }
+
+
 DEFAULT_BATCH_SIZE = 32768
 
 def build_reader(
         source_type: str,
         input_files: List[Path],
         parquet_embedding_column: Optional[str] = None,
+        hdf5_dataset_name: Optional[str] = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> EmbeddingReader:
     if batch_size <= 0:
@@ -185,5 +236,9 @@ def build_reader(
 
     if source_type == "fvecs":
         return FvecsEmbeddingReader(input_files, batch_size)
+
+    if source_type in ("hdf5", "h5"):
+        ds_name = hdf5_dataset_name if hdf5_dataset_name else "train"
+        return Hdf5EmbeddingReader(input_files, dataset_name=ds_name, batch_size=batch_size)
 
     raise ValueError(f"Unsupported source_type: {source_type}")

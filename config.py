@@ -2,7 +2,7 @@ from pathlib import Path
 import sys
 
 # Change this import to match whatever dataset processing config you are actually interested in.
-from processing_configs import dbpedia_openai_3_large_3072_1m_proc as dataset
+from processing_configs import sift1m_hdf5_proc as dataset
 
 # ------------------------------------------------------------
 # Run configuration
@@ -18,13 +18,28 @@ OVERWRITE = dataset.OVERWRITE
 # ------------------------------------------------------------
 
 RAW_BASE_FVECS = RUN_DIR / f"{FILE_PREFIX}_raw_base.fvecs"
-NONZERO_BASE_FVECS = RUN_DIR / f"{FILE_PREFIX}_nonzero_base.fvecs"
-NORMALIZED_BASE_FVECS = RUN_DIR / f"{FILE_PREFIX}_normalized_base.fvecs"
-DEDUP_BASE_FVECS = RUN_DIR / f"{FILE_PREFIX}_base.fvecs"
-SPLIT_QUERY_FVECS = RUN_DIR / f"{FILE_PREFIX}_base_query.fvecs"
-SPLIT_BASE_FVECS = RUN_DIR / f"{FILE_PREFIX}_base_base.fvecs"
+
+# INT8 early-quantization path: combined bvecs right after extraction
+RAW_QUANTIZED_BVECS = RUN_DIR / f"{FILE_PREFIX}_raw_base.bvecs"
+
+# When QUANTIZE_TO_INT8=True, the intermediate cleaning/dedup/split chain
+# operates on .bvecs files; otherwise it operates on .fvecs files.
+# Read directly from dataset here because QUANTIZE_TO_INT8 is defined later.
+_bvecs_pipeline = getattr(dataset, "QUANTIZE_TO_INT8", False)
+
+NONZERO_BASE_FVECS  = RUN_DIR / (f"{FILE_PREFIX}_nonzero_base.bvecs"    if _bvecs_pipeline else f"{FILE_PREFIX}_nonzero_base.fvecs")
+NORMALIZED_BASE_FVECS = RUN_DIR / (f"{FILE_PREFIX}_normalized_base.bvecs" if _bvecs_pipeline else f"{FILE_PREFIX}_normalized_base.fvecs")
+DEDUP_BASE_FVECS    = RUN_DIR / (f"{FILE_PREFIX}_base.bvecs"             if _bvecs_pipeline else f"{FILE_PREFIX}_base.fvecs")
+SPLIT_QUERY_FVECS   = RUN_DIR / (f"{FILE_PREFIX}_base_query.bvecs"       if _bvecs_pipeline else f"{FILE_PREFIX}_base_query.fvecs")
+SPLIT_BASE_FVECS    = RUN_DIR / (f"{FILE_PREFIX}_base_base.bvecs"        if _bvecs_pipeline else f"{FILE_PREFIX}_base_base.fvecs")
 SPLIT_QPARTS_DIR = Path(f"{DEDUP_BASE_FVECS.with_suffix('')}_qparts")
 SPLIT_BPARTS_DIR = Path(f"{DEDUP_BASE_FVECS.with_suffix('')}_bparts")
+
+# Final split outputs kept as aliases (used by GT and rename logic)
+QUANTIZED_BASE_BVECS = SPLIT_BASE_FVECS
+QUANTIZED_QUERY_BVECS = SPLIT_QUERY_FVECS
+QUANTIZATION_META_FILE = RUN_DIR / f"{FILE_PREFIX}_quantization_meta.json"
+
 GT_PROCESSED_BASE_FVECS = RUN_DIR / f"{FILE_PREFIX}_gt_processed_base.fvecs"
 GT_PROCESSED_QUERY_FVECS = RUN_DIR / f"{FILE_PREFIX}_gt_processed_query.fvecs"
 GROUND_TRUTH_FILE = RUN_DIR / "ground_truth.ivecs"
@@ -61,12 +76,20 @@ ZERO_TOLERANCE = dataset.ZERO_TOLERANCE
 NORMALIZATION_TOLERANCE = dataset.NORMALIZATION_TOLERANCE
 
 # ------------------------------------------------------------
+# Quantization configuration
+# ------------------------------------------------------------
+
+QUANTIZE_TO_INT8 = getattr(dataset, "QUANTIZE_TO_INT8", False)
+INT8_QUANTIZATION_MODE = getattr(dataset, "INT8_QUANTIZATION_MODE", "symmetric_max_abs")
+
+# ------------------------------------------------------------
 # Input data
 # ------------------------------------------------------------
 
 SOURCE_TYPE = dataset.SOURCE_TYPE
 READER_BATCH_SIZE = dataset.READER_BATCH_SIZE
-PARQUET_EMBEDDING_COLUMN = dataset.PARQUET_EMBEDDING_COLUMN
+PARQUET_EMBEDDING_COLUMN = getattr(dataset, "PARQUET_EMBEDDING_COLUMN", None)
+HDF5_DATASET_NAME = getattr(dataset, "HDF5_DATASET_NAME", "train")
 
 INPUT_DIR = dataset.INPUT_DIR
 SELECTION_MODE = dataset.SELECTION_MODE
@@ -175,11 +198,25 @@ INPUT_FILES = resolve_input_files(
 # External stage commands
 # ------------------------------------------------------------
 
+# When QUANTIZE_TO_INT8=True, quantization runs first (single-file mode),
+# and the downstream tools receive the quantized .bvecs file.
+QUANTIZE_CMD = [
+    sys.executable,
+    "-u",
+    "bvecs_quantize.py",
+    "--input", str(RAW_BASE_FVECS),
+    "--output", str(RAW_QUANTIZED_BVECS),
+    "--meta_out", str(QUANTIZATION_META_FILE),
+    "--batch_size", str(READER_BATCH_SIZE),
+] if QUANTIZE_TO_INT8 else []
+
+_REMOVE_ZEROS_INPUT = RAW_QUANTIZED_BVECS if QUANTIZE_TO_INT8 else RAW_BASE_FVECS
+
 REMOVE_ZEROS_CMD = [
     sys.executable,
     "-u",
     "fvecs_remove_zeros.py",
-    "--input", str(RAW_BASE_FVECS),
+    "--input", str(_REMOVE_ZEROS_INPUT),
     "--output", str(NONZERO_BASE_FVECS),
     "--tolerance", str(ZERO_TOLERANCE),
 ]
@@ -214,12 +251,15 @@ SPLIT_CMD = [
     "--seed", "47",
 ]
 
+_GT_BASE_INPUT = SPLIT_BASE_FVECS
+_GT_QUERY_INPUT = SPLIT_QUERY_FVECS
+
 GROUND_TRUTH_CMD = [
     sys.executable,
     "-u",
     "knn_utils.py",
-    "--base", str(SPLIT_BASE_FVECS),
-    "--query", str(SPLIT_QUERY_FVECS),
+    "--base", str(_GT_BASE_INPUT),
+    "--query", str(_GT_QUERY_INPUT),
     "--output", str(GROUND_TRUTH_FILE),
     "--processed_base_out", str(GT_PROCESSED_BASE_FVECS),
     "--processed_query_out", str(GT_PROCESSED_QUERY_FVECS),

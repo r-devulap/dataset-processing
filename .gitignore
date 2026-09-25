@@ -5,3 +5,4 @@ runs/
 !.idea/misc.xml
 !.idea/vcs.xml
 
+venv/

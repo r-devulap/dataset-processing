@@ -25,7 +25,17 @@ import tempfile
 import shutil
 from collections import Counter
 
-def reader_thread(fname, raw_q, chunk_size, endian_prefix):
+def _vec_bytes_size(d, is_bvecs):
+    """Return the number of data bytes for a vector of dimension d."""
+    return d if is_bvecs else 4 * d
+
+
+def _vec_fmt(d, endian_prefix, is_bvecs):
+    """Return the struct format string for a vector of dimension d."""
+    return endian_prefix + f'{d}b' if is_bvecs else endian_prefix + f'{d}f'
+
+
+def reader_thread(fname, raw_q, chunk_size, endian_prefix, is_bvecs):
     fmt_int = endian_prefix + 'i'
     line_num = 1
     run = 0
@@ -37,10 +47,11 @@ def reader_thread(fname, raw_q, chunk_size, endian_prefix):
                 if not d_bytes:
                     break
                 d = struct.unpack(fmt_int, d_bytes)[0]
-                vec_bytes = f.read(4 * d)
-                if len(vec_bytes) < 4 * d:
+                nbytes = _vec_bytes_size(d, is_bvecs)
+                vec_bytes = f.read(nbytes)
+                if len(vec_bytes) < nbytes:
                     raise IOError(f"Incomplete record at chunk {run}")
-                vec = struct.unpack(endian_prefix + f'{d}f', vec_bytes)
+                vec = struct.unpack(_vec_fmt(d, endian_prefix, is_bvecs), vec_bytes)
                 chunk.append((vec, line_num))
                 line_num += 1
             if not chunk:
@@ -51,9 +62,10 @@ def reader_thread(fname, raw_q, chunk_size, endian_prefix):
         raw_q.put(None)
     print("[Reader] Done")
 
-def writer_thread(temp_dir, sorted_q, endian_prefix, dim):
+def writer_thread(temp_dir, sorted_q, endian_prefix, dim, is_bvecs):
     fmt_int  = endian_prefix + 'i'
     line_fmt = endian_prefix + 'q'
+    vec_fmt  = _vec_fmt(dim, endian_prefix, is_bvecs)
     while True:
         item = sorted_q.get()
         if item is None:
@@ -64,13 +76,13 @@ def writer_thread(temp_dir, sorted_q, endian_prefix, dim):
         with open(run_path, 'wb') as out:
             for vec, line_no in sorted_chunk:
                 out.write(struct.pack(fmt_int, dim))
-                out.write(struct.pack(endian_prefix + f'{dim}f', *vec))
+                out.write(struct.pack(vec_fmt, *vec))
                 out.write(struct.pack(line_fmt, line_no))
         sorted_q.task_done()
     sorted_q.task_done()
     print("[Writer] Done")
 
-def merge_runs(temp_dir, run_count, reporting_threshold, output_path, endian_prefix, report_path=None, verbose_dups=False):
+def merge_runs(temp_dir, run_count, reporting_threshold, output_path, endian_prefix, is_bvecs=False, report_path=None, verbose_dups=False):
     report_f = open(report_path, 'w') if report_path else None
     fmt_int  = endian_prefix + 'i'
     line_fmt = endian_prefix + 'q'
@@ -88,8 +100,9 @@ def merge_runs(temp_dir, run_count, reporting_threshold, output_path, endian_pre
         if not d_bytes:
             continue
         d = struct.unpack(fmt_int, d_bytes)[0]
-        vec_bytes = f.read(4 * d)
-        vec = struct.unpack(endian_prefix + f'{d}f', vec_bytes)
+        nbytes = _vec_bytes_size(d, is_bvecs)
+        vec_bytes = f.read(nbytes)
+        vec = struct.unpack(_vec_fmt(d, endian_prefix, is_bvecs), vec_bytes)
         line_no = struct.unpack(line_fmt, f.read(8))[0]
         heapq.heappush(heap, (vec, line_no, i))
     print(f"[Merge] Initialized heap with {len(heap)} runs")
@@ -127,13 +140,14 @@ def merge_runs(temp_dir, run_count, reporting_threshold, output_path, endian_pre
                 run_line_nos = [line_no]
                 total_written += 1
                 out.write(struct.pack(fmt_int, len(vec)))
-                out.write(struct.pack(endian_prefix + f'{len(vec)}f', *vec))
+                out.write(struct.pack(_vec_fmt(len(vec), endian_prefix, is_bvecs), *vec))
 
             d_bytes = readers[rid].read(4)
             if d_bytes:
                 d = struct.unpack(fmt_int, d_bytes)[0]
-                vec_bytes = readers[rid].read(4 * d)
-                next_vec = struct.unpack(endian_prefix + f'{d}f', vec_bytes)
+                nbytes = _vec_bytes_size(d, is_bvecs)
+                vec_bytes = readers[rid].read(nbytes)
+                next_vec = struct.unpack(_vec_fmt(d, endian_prefix, is_bvecs), vec_bytes)
                 next_line = struct.unpack(line_fmt, readers[rid].read(8))[0]
                 heapq.heappush(heap, (next_vec, next_line, rid))
 
@@ -193,7 +207,7 @@ def merge_runs(temp_dir, run_count, reporting_threshold, output_path, endian_pre
                 f"{str(others):<{w3}}"
             )
 
-def dedup_presorted(input_path, reporting_threshold, output_path, endian_prefix, report_path=None, verbose_dups=False):
+def dedup_presorted(input_path, reporting_threshold, output_path, endian_prefix, is_bvecs=False, report_path=None, verbose_dups=False):
     report_f = open(report_path, 'w') if report_path else None
     fmt_int = endian_prefix + 'i'
     dup_hist = Counter()
@@ -216,10 +230,11 @@ def dedup_presorted(input_path, reporting_threshold, output_path, endian_prefix,
             if not d_bytes:
                 break
             d = struct.unpack(fmt_int, d_bytes)[0]
-            vec_bytes = fin.read(4 * d)
-            if len(vec_bytes) < 4 * d:
+            nbytes = _vec_bytes_size(d, is_bvecs)
+            vec_bytes = fin.read(nbytes)
+            if len(vec_bytes) < nbytes:
                 raise IOError(f"Incomplete record at line {line_num}")
-            vec = struct.unpack(endian_prefix + f'{d}f', vec_bytes)
+            vec = struct.unpack(_vec_fmt(d, endian_prefix, is_bvecs), vec_bytes)
             total_processed += 1
 
             if last_vec is not None and vec == last_vec:
@@ -241,7 +256,7 @@ def dedup_presorted(input_path, reporting_threshold, output_path, endian_prefix,
                 dup_count = 1
                 other_lines = []
                 out.write(struct.pack(fmt_int, d))
-                out.write(struct.pack(endian_prefix + f'{d}f', *vec))
+                out.write(struct.pack(_vec_fmt(d, endian_prefix, is_bvecs), *vec))
 
             total += 1
             line_num += 1
@@ -292,9 +307,9 @@ def dedup_presorted(input_path, reporting_threshold, output_path, endian_prefix,
 
 def main():
     p = argparse.ArgumentParser(
-        description="External mergesort for .fvecs with I/O overlap and duplicate reporting."
+        description="External mergesort for .fvecs/.bvecs with I/O overlap and duplicate reporting."
     )
-    p.add_argument("input", help="Input .fvecs file")
+    p.add_argument("input", help="Input .fvecs or .bvecs file")
     p.add_argument("-n", "--reporting_threshold", type=int, default=1,
                    help="Report vectors appearing more than this many times (default 1)")
     p.add_argument("-c", "--chunk_size", type=int, default=200_000,
@@ -315,6 +330,7 @@ def main():
 
     endian_prefix = '<' if args.endian == 'little' else '>'
     output = args.output or f"sorted_{os.path.basename(args.input)}"
+    is_bvecs = args.input.lower().endswith(".bvecs")
 
     if args.presorted:
         dedup_presorted(
@@ -322,6 +338,7 @@ def main():
             args.reporting_threshold,
             output,
             endian_prefix,
+            is_bvecs,
             args.report_file,
             args.verbose_dups
         )
@@ -341,7 +358,7 @@ def main():
 
     rt = threading.Thread(
         target=reader_thread,
-        args=(args.input, raw_q, args.chunk_size, endian_prefix),
+        args=(args.input, raw_q, args.chunk_size, endian_prefix, is_bvecs),
         daemon=True)
     rt.start()
 
@@ -362,7 +379,7 @@ def main():
 
     wt = threading.Thread(
         target=writer_thread,
-        args=(temp_dir, sorted_q, endian_prefix, dim),
+        args=(temp_dir, sorted_q, endian_prefix, dim, is_bvecs),
         daemon=True)
     wt.start()
 
@@ -392,6 +409,7 @@ def main():
         args.reporting_threshold,
         output,
         endian_prefix,
+        is_bvecs,
         args.report_file,
         args.verbose_dups
     )

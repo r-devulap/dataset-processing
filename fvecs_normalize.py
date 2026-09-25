@@ -7,6 +7,10 @@ import struct
 import numpy as np
 
 
+# ---------------------------------------------------------------------------
+# fvecs helpers
+# ---------------------------------------------------------------------------
+
 def read_fvecs(fname):
     fname = os.path.expanduser(fname)
     data = np.fromfile(fname, dtype=np.float32)
@@ -55,6 +59,55 @@ def write_fvecs(fname, arr):
         formatted.tofile(f)
 
 
+# ---------------------------------------------------------------------------
+# bvecs helpers
+# ---------------------------------------------------------------------------
+
+def read_bvecs(fname):
+    """Read a .bvecs file and return an int8 ndarray of shape (n, dim)."""
+    fname = os.path.expanduser(fname)
+    with open(fname, "rb") as f:
+        raw = f.read()
+
+    if not raw:
+        return np.empty((0, 0), dtype=np.int8)
+
+    dim = struct.unpack("<i", raw[:4])[0]
+    if dim <= 0:
+        raise ValueError(f"Invalid dimension {dim} in {fname}")
+
+    record_size = 4 + dim
+    if len(raw) % record_size != 0:
+        raise ValueError(
+            f"File size is not consistent with bvecs format: "
+            f"{fname}, dim={dim}, total_bytes={len(raw)}"
+        )
+
+    n = len(raw) // record_size
+    buf = np.frombuffer(raw, dtype=np.uint8).reshape(n, record_size)
+    return np.ascontiguousarray(buf[:, 4:].view(np.int8))
+
+
+def write_bvecs(fname, arr):
+    """Write an int8 ndarray (n, dim) to a .bvecs file."""
+    arr = np.asarray(arr, dtype=np.int8)
+    if arr.ndim != 2:
+        raise ValueError(f"Expected 2D array, got shape {arr.shape}")
+
+    n, d = arr.shape
+    fname = os.path.expanduser(fname)
+    header = np.array([d], dtype=np.int32).tobytes()
+
+    with open(fname, "wb") as f:
+        for i in range(n):
+            f.write(header)
+            f.write(arr[i].tobytes())
+
+
+# ---------------------------------------------------------------------------
+# Normalization logic
+# ---------------------------------------------------------------------------
+
 def normalization_error_stats(vecs):
     norms = np.linalg.norm(vecs, axis=1)
     errors = np.abs(norms - 1.0)
@@ -91,9 +144,9 @@ def normalize_vectors(arr):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Normalize vectors in an fvecs file.")
-    parser.add_argument("--input", required=True, help="Input fvecs file")
-    parser.add_argument("--output", required=True, help="Output normalized fvecs file")
+    parser = argparse.ArgumentParser(description="Normalize vectors in an fvecs or bvecs file.")
+    parser.add_argument("--input", required=True, help="Input fvecs or bvecs file")
+    parser.add_argument("--output", required=True, help="Output normalized file")
     parser.add_argument(
         "--tolerance",
         type=float,
@@ -105,7 +158,12 @@ def main():
     if args.tolerance < 0:
         raise ValueError("--tolerance must be non-negative")
 
-    vectors = read_fvecs(args.input)
+    is_bvecs = args.input.lower().endswith(".bvecs")
+    if is_bvecs:
+        raw_int8 = read_bvecs(args.input)
+        vectors = raw_int8.astype(np.float32)
+    else:
+        vectors = read_fvecs(args.input)
 
     normalized_before = check_normalization(vectors, tol=args.tolerance)
     before_stats = normalization_error_stats(vectors)
@@ -135,7 +193,14 @@ def main():
     print(f"Max abs norm error after: {after_stats['max_abs_error']:.8g}")
     print(f"Mean abs norm error after: {after_stats['mean_abs_error']:.8g}")
 
-    write_fvecs(output_path, normalized)
+    if is_bvecs:
+        # Re-quantize normalized float32 back to int8 using max-abs scaling.
+        max_abs = float(np.max(np.abs(normalized))) if normalized.size > 0 else 1.0
+        scale = 127.0 / max_abs if max_abs > 0.0 else 1.0
+        quantized = np.clip(np.round(normalized * scale), -128, 127).astype(np.int8)
+        write_bvecs(output_path, quantized)
+    else:
+        write_fvecs(output_path, normalized)
     print(f"Wrote normalized file to: {output_path}")
 
 

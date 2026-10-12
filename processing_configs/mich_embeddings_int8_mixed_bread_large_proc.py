@@ -5,12 +5,12 @@ OUTPUT_DIR = Path("/home/ubuntu/dataset_cache/int8-datasets/processed/mich-embed
 FILE_PREFIX = "mich_int8_mixed_bread_large"
 SOURCE_TYPE = "parquet"
 READER_BATCH_SIZE = 32768
-PARQUET_EMBEDDING_COLUMN = "emb_int8"  # adjust if the column name differs
+PARQUET_EMBEDDING_COLUMN = "embeddings"
 
 INPUT_DIR = Path("/home/ubuntu/dataset_cache/int8-datasets/mich-embeddings-int8-mixed-bread-large")
 
-SELECTION_MODE = "first_n"
-FIRST_N = 11
+SELECTION_MODE = "all"
+FIRST_N = None
 EXPLICIT_INPUT_FILES = []
 
 SELECT_SUBSTRINGS = []

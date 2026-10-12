@@ -4,7 +4,7 @@ from typing import Iterable, Optional
 from huggingface_hub import HfApi, snapshot_download
 
 # Change only this import to choose which repo config to run.
-from download_configs import dbpedia_openai_3_large_3072_download as repo
+from download_configs import wiki_cohere_multiligual_v3_int8 as repo
 
 # ============================================================
 # Configuration

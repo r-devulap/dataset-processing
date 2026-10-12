@@ -5,7 +5,7 @@ REPO_TYPE = "dataset"
 REVISION = "main"
 TOKEN = None
 
-LOCAL_DIR = Path("/home/ted_willke/datasets-temp/dbpedia-entities-openai3-text-embedding-3-large-3072-1M")
+LOCAL_DIR = Path("/home/raghuveer/myplayground/int8-datasets/dbpedia-entities-openai3-text-embedding-3-large-3072-1M")
 MAX_WORKERS = 16
 DRY_RUN = False
 

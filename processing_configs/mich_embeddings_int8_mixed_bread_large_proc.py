@@ -7,7 +7,7 @@ SOURCE_TYPE = "parquet"
 READER_BATCH_SIZE = 32768
 PARQUET_EMBEDDING_COLUMN = "embeddings"
 
-INPUT_DIR = Path("/home/ubuntu/dataset_cache/int8-datasets/mich-embeddings-int8-mixed-bread-large")
+INPUT_DIR = Path("/home/ubuntu/dataset_cache/int8-datasets/mich-embeddings-int8-mixed-bread-large/data")
 
 SELECTION_MODE = "all"
 FIRST_N = None

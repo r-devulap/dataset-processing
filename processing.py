@@ -33,8 +33,10 @@ from config import (
     OVERWRITE,
     PARQUET_EMBEDDING_COLUMN,
     RAW_BASE_FVECS,
+    READER_BATCH_SIZE,
     REMOVE_ZEROS_CMD,
     RUN_DIR,
+    SOURCE_INT8,
     SOURCE_TYPE,
     SPLIT_BASE_FVECS,
     SPLIT_BPARTS_DIR,
@@ -45,9 +47,9 @@ from config import (
     ZERO_TOLERANCE,
     NORMALIZED_BASE_FVECS,
 )
+from bvecs_writer import append_bvecs, count_bvecs
 from fvecs_writer import append_fvecs, count_fvecs
 from ivecs_check import read_ivecs_info
-from config import READER_BATCH_SIZE
 from readers import build_reader
 
 
@@ -113,7 +115,13 @@ def extract_base_vectors(logger: logging.Logger) -> dict:
 
     validate_input_files()
 
-    reader = build_reader(SOURCE_TYPE, INPUT_FILES, PARQUET_EMBEDDING_COLUMN, READER_BATCH_SIZE)
+    reader = build_reader(
+        SOURCE_TYPE,
+        INPUT_FILES,
+        PARQUET_EMBEDDING_COLUMN,
+        READER_BATCH_SIZE,
+        output_dtype="int8" if SOURCE_INT8 else "float32",
+    )
     logger.info("Reader description: %s", reader.describe())
 
     requested_initial_vectors = None if NUM_BASE is None else (NUM_BASE + NUM_QUERY)
@@ -147,7 +155,10 @@ def extract_base_vectors(logger: logging.Logger) -> dict:
                 batch = batch[:remaining]
                 batch_vectors = batch.shape[0]
 
-        append_fvecs(RAW_BASE_FVECS, batch)
+        if SOURCE_INT8:
+            append_bvecs(RAW_BASE_FVECS, batch)
+        else:
+            append_fvecs(RAW_BASE_FVECS, batch)
 
         total_vectors += batch_vectors
         batch_count += 1
@@ -315,6 +326,9 @@ def count_output_file(path: Path) -> tuple[int, int]:
     if suffix == ".fvecs":
         return count_fvecs(path)
 
+    if suffix == ".bvecs":
+        return count_bvecs(path)
+
     if suffix == ".ivecs":
         _, num_rows, row_length = read_ivecs_info(str(path))
         if row_length is None:
@@ -353,6 +367,7 @@ def main() -> None:
     logger.info("Run directory: %s", RUN_DIR)
     logger.info("File prefix: %s", FILE_PREFIX)
     logger.info("Source type: %s", SOURCE_TYPE)
+    logger.info("Source INT8 passthrough: %s", SOURCE_INT8)
     logger.info("Parquet embedding column: %s", PARQUET_EMBEDDING_COLUMN)
     logger.info("Remove zeros tolerance: %s", ZERO_TOLERANCE)
     logger.info("Normalization tolerance: %s", NORMALIZATION_TOLERANCE)
@@ -456,11 +471,12 @@ def main() -> None:
         actual_query_count, _ = count_output_file(query_source)
         actual_base_count, _ = count_output_file(base_source)
 
-        final_base_fvecs = RUN_DIR / f"{FILE_PREFIX}_base_{actual_base_count}.fvecs"
-        final_query_fvecs = RUN_DIR / f"{FILE_PREFIX}_query_{actual_query_count}.fvecs"
+        ext = ".bvecs" if SOURCE_INT8 else ".fvecs"
+        final_base_file = RUN_DIR / f"{FILE_PREFIX}_base_{actual_base_count}{ext}"
+        final_query_file = RUN_DIR / f"{FILE_PREFIX}_query_{actual_query_count}{ext}"
 
-        safe_rename(base_source, final_base_fvecs, logger)
-        safe_rename(query_source, final_query_fvecs, logger)
+        safe_rename(base_source, final_base_file, logger)
+        safe_rename(query_source, final_query_file, logger)
         safe_rename(GROUND_TRUTH_FILE, FINAL_GROUND_TRUTH, logger)
 
         if CLEANUP_INTERMEDIATE_FVECS:
@@ -480,8 +496,8 @@ def main() -> None:
         }
 
         summary["final_artifacts"] = {
-            "base": str(final_base_fvecs),
-            "query": str(final_query_fvecs),
+            "base": str(final_base_file),
+            "query": str(final_query_file),
             "ground_truth": str(FINAL_GROUND_TRUTH),
         }
 

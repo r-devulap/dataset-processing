@@ -113,16 +113,27 @@ class FvecsEmbeddingReader(EmbeddingReader):
 
 class ParquetEmbeddingReader(EmbeddingReader):
 
-    def __init__(self, input_files: List[Path], embedding_column: str, batch_size: int) -> None:
+    def __init__(
+        self,
+        input_files: List[Path],
+        embedding_column: str,
+        batch_size: int,
+        output_dtype: str = "float32",
+    ) -> None:
         if not embedding_column:
             raise ValueError("ParquetEmbeddingReader requires a non-empty embedding_column")
+        if output_dtype not in ("float32", "int8"):
+            raise ValueError(f"output_dtype must be 'float32' or 'int8', got '{output_dtype}'")
         _validate_file_suffixes(input_files, "ParquetEmbeddingReader", (".parquet",))
         self.input_files = input_files
         self.batch_size = batch_size
         self.embedding_column = embedding_column
+        self.output_dtype = output_dtype
 
     def iter_batches(self) -> Iterable[np.ndarray]:
         import pyarrow.parquet as pq
+
+        dtype = np.int8 if self.output_dtype == "int8" else np.float32
 
         for path in self.input_files:
             # use_threads=True and memory_map=True improve I/O performance
@@ -151,12 +162,13 @@ class ParquetEmbeddingReader(EmbeddingReader):
 
                 self.current_file = str(path)
 
-                yield np.ascontiguousarray(arr, dtype=np.float32)
+                yield np.ascontiguousarray(arr, dtype=dtype)
 
     def describe(self) -> dict:
         return {
             "reader": "parquet",
             "embedding_column": self.embedding_column,
+            "output_dtype": self.output_dtype,
             "batch_size": self.batch_size,
             "num_files": len(self.input_files),
             "files": [str(p) for p in self.input_files],
@@ -169,6 +181,7 @@ def build_reader(
         input_files: List[Path],
         parquet_embedding_column: Optional[str] = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
+        output_dtype: str = "float32",
 ) -> EmbeddingReader:
     if batch_size <= 0:
         raise ValueError(f"batch_size must be > 0, got {batch_size}")
@@ -181,7 +194,9 @@ def build_reader(
             raise ValueError(
                 "source_type='parquet' requires parquet_embedding_column to be set"
             )
-        return ParquetEmbeddingReader(input_files, parquet_embedding_column, batch_size)
+        return ParquetEmbeddingReader(
+            input_files, parquet_embedding_column, batch_size, output_dtype=output_dtype
+        )
 
     if source_type == "fvecs":
         return FvecsEmbeddingReader(input_files, batch_size)

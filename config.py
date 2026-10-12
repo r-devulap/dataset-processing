@@ -2,7 +2,7 @@ from pathlib import Path
 import sys
 
 # Change this import to match whatever dataset processing config you are actually interested in.
-from processing_configs import dbpedia_openai_3_large_3072_1m_proc as dataset
+from processing_configs import wiki_multilingual_v3_int8_1m_proc as dataset
 
 # ------------------------------------------------------------
 # Run configuration
@@ -14,19 +14,30 @@ CLEANUP_INTERMEDIATE_FVECS = dataset.CLEANUP_INTERMEDIATE_FVECS
 OVERWRITE = dataset.OVERWRITE
 
 # ------------------------------------------------------------
+# INT8 passthrough mode
+# When SOURCE_INT8=True the pipeline reads INT8 vectors directly from the
+# source (no float32 extraction) and keeps them as .bvecs throughout every
+# stage (remove_zeros, normalize passthrough, dedup, split, ground truth).
+# ------------------------------------------------------------
+
+SOURCE_INT8 = getattr(dataset, "SOURCE_INT8", False)
+
+# ------------------------------------------------------------
 # Working files. Do not update.
 # ------------------------------------------------------------
 
-RAW_BASE_FVECS = RUN_DIR / f"{FILE_PREFIX}_raw_base.fvecs"
-NONZERO_BASE_FVECS = RUN_DIR / f"{FILE_PREFIX}_nonzero_base.fvecs"
-NORMALIZED_BASE_FVECS = RUN_DIR / f"{FILE_PREFIX}_normalized_base.fvecs"
-DEDUP_BASE_FVECS = RUN_DIR / f"{FILE_PREFIX}_base.fvecs"
-SPLIT_QUERY_FVECS = RUN_DIR / f"{FILE_PREFIX}_base_query.fvecs"
-SPLIT_BASE_FVECS = RUN_DIR / f"{FILE_PREFIX}_base_base.fvecs"
+_ext = ".bvecs" if SOURCE_INT8 else ".fvecs"
+
+RAW_BASE_FVECS    = RUN_DIR / f"{FILE_PREFIX}_raw_base{_ext}"
+NONZERO_BASE_FVECS    = RUN_DIR / f"{FILE_PREFIX}_nonzero_base{_ext}"
+NORMALIZED_BASE_FVECS = RUN_DIR / f"{FILE_PREFIX}_normalized_base{_ext}"
+DEDUP_BASE_FVECS      = RUN_DIR / f"{FILE_PREFIX}_base{_ext}"
+SPLIT_QUERY_FVECS     = RUN_DIR / f"{FILE_PREFIX}_base_query{_ext}"
+SPLIT_BASE_FVECS      = RUN_DIR / f"{FILE_PREFIX}_base_base{_ext}"
 SPLIT_QPARTS_DIR = Path(f"{DEDUP_BASE_FVECS.with_suffix('')}_qparts")
 SPLIT_BPARTS_DIR = Path(f"{DEDUP_BASE_FVECS.with_suffix('')}_bparts")
-GT_PROCESSED_BASE_FVECS = RUN_DIR / f"{FILE_PREFIX}_gt_processed_base.fvecs"
-GT_PROCESSED_QUERY_FVECS = RUN_DIR / f"{FILE_PREFIX}_gt_processed_query.fvecs"
+GT_PROCESSED_BASE_FVECS  = RUN_DIR / f"{FILE_PREFIX}_gt_processed_base{_ext}"
+GT_PROCESSED_QUERY_FVECS = RUN_DIR / f"{FILE_PREFIX}_gt_processed_query{_ext}"
 GROUND_TRUTH_FILE = RUN_DIR / "ground_truth.ivecs"
 
 DEDUP_REPORT = RUN_DIR / f"{FILE_PREFIX}_dedup_report.txt"

@@ -1,0 +1,4 @@
+numpy
+pyarrow
+faiss-cpu
+huggingface_hub

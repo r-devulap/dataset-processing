@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 
+import argparse
 import json
 import logging
 import shutil
@@ -359,7 +360,67 @@ def safe_rename(src: Path, dst: Path, logger: logging.Logger) -> None:
     logger.info("Renamed final artifact: %s -> %s", src, dst)
 
 
+def print_help_and_exit() -> None:
+    from config import (
+        FILE_PREFIX,
+        SOURCE_TYPE,
+        SOURCE_INT8,
+        NUM_BASE,
+        NUM_QUERY,
+        GT_K,
+        GT_METRIC,
+        GT_SHUFFLE,
+        GT_GPUS,
+        RUN_DIR,
+        OVERWRITE,
+        CLEANUP_INTERMEDIATE_FVECS,
+        INPUT_DIR,
+        SELECTION_MODE,
+    )
+    import processing_configs as _pkg
+    import importlib
+    import pkgutil
+
+    configs = sorted(
+        m.name
+        for m in pkgutil.iter_modules(_pkg.__path__)
+        if not m.name.startswith("_")
+    )
+
+    print("usage: processing.py [-h]")
+    print()
+    print("Run the dataset processing pipeline.")
+    print("Select a config by editing the import in config.py.")
+    print()
+    print("Active configuration:")
+    print(f"  file_prefix          : {FILE_PREFIX}")
+    print(f"  source_type          : {SOURCE_TYPE}")
+    print(f"  source_int8          : {SOURCE_INT8}")
+    print(f"  input_dir            : {INPUT_DIR}")
+    print(f"  selection_mode       : {SELECTION_MODE}")
+    print(f"  num_base             : {NUM_BASE}")
+    print(f"  num_query            : {NUM_QUERY}")
+    print(f"  gt_k                 : {GT_K}")
+    print(f"  gt_metric            : {GT_METRIC}")
+    print(f"  gt_shuffle           : {GT_SHUFFLE}")
+    print(f"  gt_gpus              : {GT_GPUS}")
+    print(f"  run_dir              : {RUN_DIR}")
+    print(f"  overwrite            : {OVERWRITE}")
+    print(f"  cleanup_intermediate : {CLEANUP_INTERMEDIATE_FVECS}")
+    print()
+    print("Available processing configs (processing_configs/):")
+    for name in configs:
+        print(f"  {name}")
+    raise SystemExit(0)
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("-h", "--help", action="store_true", default=False)
+    args, _ = parser.parse_known_args()
+    if args.help:
+        print_help_and_exit()
+
     RUN_DIR.mkdir(parents=True, exist_ok=True)
     logger = setup_logger(LOG_FILE)
 

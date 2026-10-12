@@ -12,12 +12,51 @@ def read_fvecs(fname):
     as: [d, float, float, ..., float], with 1 integer dimension d and d floats.
     """
     with open(fname, "rb") as f:
-        data = np .fromfile(f, dtype=np.int32)
+        data = np.fromfile(f, dtype=np.int32)
         dim = data[0].item()
         f.seek(0)  # Reset file pointer to re-read data correctly
         data = np.fromfile(f, dtype=np.float32)  # Read full data as float32
         num_vectors = len(data) // (dim + 1)
         return data.reshape(num_vectors, dim + 1)[:, 1:]  # Remove first column (dimension)
+
+
+def read_bvecs(fname):
+    """
+    Reads a bvecs file (signed int8 vectors) and returns a float32 numpy
+    array of shape (n, d). FAISS requires float32 input.
+    Each record: [d (int32 LE), x_0 (int8), ..., x_{d-1} (int8)]
+    """
+    fname = os.path.expanduser(fname)
+    with open(fname, "rb") as f:
+        raw = f.read()
+    if not raw:
+        return np.empty((0, 0), dtype=np.float32)
+    dim = struct.unpack("<i", raw[:4])[0]
+    if dim <= 0:
+        raise ValueError(f"Invalid dimension {dim} in {fname}")
+    record_size = 4 + dim
+    if len(raw) % record_size != 0:
+        raise ValueError(
+            f"bvecs file size {len(raw)} is not a multiple of record size {record_size}: {fname}"
+        )
+    n = len(raw) // record_size
+    buf = np.frombuffer(raw, dtype=np.uint8).reshape(n, record_size)
+    return buf[:, 4:].view(np.int8).astype(np.float32)
+
+
+def write_bvecs(fname, arr):
+    """
+    Write a float32 array (n, d) to a bvecs file by clipping and casting to int8.
+    Used when processed_base_out / processed_query_out end in .bvecs.
+    """
+    arr_int8 = np.clip(np.round(arr), -128, 127).astype(np.int8)
+    n, d = arr_int8.shape
+    fname = os.path.expanduser(fname)
+    header = np.array([d], dtype=np.int32).tobytes()
+    with open(fname, "wb") as f:
+        for i in range(n):
+            f.write(header)
+            f.write(arr_int8[i].tobytes())
 
 def read_hdf5(fname, key="data"):
     """
@@ -43,21 +82,29 @@ def read_hdf5_tensor(fname, key="data"):
 
 def read_vectors(fname):
     """
-    Determines whether the file is HDF5 or fvec format.
-    For HDF5 files (extension .h5 or .hdf5), it checks for a colon.
-    If a colon is found, splits the string into filename and key.
-    Otherwise, uses the default key "data".
+    Determines the file format from the extension and reads accordingly.
+    Supported: .fvecs, .bvecs (returned as float32 for FAISS), .h5/.hdf5.
+    For HDF5, use the format 'file.h5:key'.
     """
     fname = os.path.expanduser(fname)
-    # If a colon is present, split into file_path and key.
     if ':' in fname:
         file_path, key = fname.split(':', 1)
         if file_path.endswith('.h5') or file_path.endswith('.hdf5'):
             return read_hdf5(file_path, key)
         else:
             raise ValueError("For HDF5, use the format 'file.h5:key'")
+    elif fname.lower().endswith('.bvecs'):
+        return read_bvecs(fname)
     else:
         return read_fvecs(fname)
+
+def _write_vectors(fname, arr):
+    """Write vectors to .fvecs or .bvecs based on file extension."""
+    if fname.lower().endswith('.bvecs'):
+        write_bvecs(fname, arr)
+    else:
+        write_fvecs(fname, arr)
+
 
 def write_fvecs(fname, arr):
     """
@@ -249,21 +296,21 @@ def main():
             raise ValueError(
                 "When removing zeros, normalization, shuffling, or truncation is applied, processed_base_out and processed_query_out must be provided. ")
         print("Writing processed base vectors to:", args.processed_base_out)
-        write_fvecs(args.processed_base_out, base)
+        _write_vectors(args.processed_base_out, base)
         print("Writing processed query vectors to:", args.processed_query_out)
-        write_fvecs(args.processed_query_out, query)
+        _write_vectors(args.processed_query_out, query)
     elif args.num_base > 0:
         if not args.processed_base_out:
             raise ValueError(
                 "When truncation is applied, processed_base_out must be provided.")
         print("Writing processed base vectors to:", args.processed_base_out)
-        write_fvecs(args.processed_base_out, base)
+        _write_vectors(args.processed_base_out, base)
     elif args.num_query > 0:
         if not args.processed_query_out:
             raise ValueError(
                 "When truncation is applied, processed_query_out must be provided.")
         print("Writing processed query vectors to:", args.processed_query_out)
-        write_fvecs(args.processed_query_out, query)
+        _write_vectors(args.processed_query_out, query)
 
     # Creating index and adding base vectors.
     print("Adding base vectors to the index...")

@@ -4,7 +4,7 @@ from typing import Iterable, Optional
 from huggingface_hub import HfApi, snapshot_download
 
 # Change only this import to choose which repo config to run.
-from download_configs import dbpedia_openai_3_large_3072_download as repo
+from download_configs import mich_embeddings_int8_mixed_bread_large_download as repo
 
 # ============================================================
 # Configuration
